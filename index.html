@@ -20,13 +20,16 @@
   button{font-family:inherit;font-size:14px;font-weight:700;padding:9px 16px;border-radius:8px;border:none;background:var(--gold);color:var(--ink);cursor:pointer;}
   button.secondary{background:var(--felt-light);color:var(--ivory);}
   button:disabled{opacity:0.4;cursor:not-allowed;}
-  .card{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:48px;height:66px;border-radius:7px;background:var(--ivory);color:var(--ink);font-family:'Fraunces',serif;font-weight:600;font-size:15px;cursor:pointer;box-shadow:0 2px 0 rgba(0,0,0,0.25);}
+  .card{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;width:72px;height:99px;border-radius:10px;background:var(--ivory);color:var(--ink);font-family:'Fraunces',serif;font-weight:600;font-size:23px;cursor:pointer;box-shadow:0 2px 0 rgba(0,0,0,0.25);}
   .card.disabled{opacity:0.3;cursor:not-allowed;}
-  .card.back{background:var(--felt-light);color:var(--muted);font-size:18px;border:1px dashed var(--muted);}
+  .card.back{background:var(--felt-light);color:var(--muted);font-size:27px;border:1px dashed var(--muted);}
   .row{display:flex;gap:8px;flex-wrap:wrap;}
   .col{display:flex;flex-direction:column;gap:8px;}
   .center{text-align:center;}
-  .table{display:grid;grid-template-columns:1fr 2fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:". top ." "left mid right" ". bottom .";gap:10px;align-items:center;margin:18px 0;}
+  .table{position:relative;display:grid;grid-template-columns:1fr 2fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:". top ." "left mid right" ". bottom .";gap:10px;align-items:center;margin:18px 0;}
+  .trump-corner{position:absolute;top:-14px;right:-6px;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;width:78px;height:107px;border-radius:10px;background:var(--ivory);box-shadow:0 3px 0 rgba(0,0,0,0.3);font-family:'Fraunces',serif;font-weight:700;}
+  .trump-corner .rank{font-size:22px;color:var(--ink);line-height:1;}
+  .trump-corner .suit{font-size:40px;line-height:1;}
   .seat{text-align:center;padding:8px;border-radius:10px;}
   .seat.active{background:rgba(201,162,39,0.18);border:1px solid var(--gold);}
   .seatname{font-weight:700;font-size:14px;}
@@ -41,7 +44,6 @@
   .scorebox .l{font-size:11px;color:var(--muted);}
   .linkbox{display:flex;gap:8px;align-items:center;}
   .linkbox input{flex:1;}
-  .voicebar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}
   ::placeholder{color:var(--muted);}
 </style>
 </head>
@@ -108,7 +110,6 @@ function isBotUid(uid){ return typeof uid==='string' && uid.indexOf('bot-')===0;
 let myUid=null, myName='', roomId=null, roomRef=null, myHandRef=null;
 let room=null, myHand={cards:[],bid:null};
 let localTrumpOptions=null, myBidDraft=5;
-let micEnabled=true, speakerEnabled=true, isRecording=false, mediaRecorder=null, audioChunks=[];
 let botMoving=false;
 const pageLoadTs=Date.now();
 const handled=new Set();
@@ -197,16 +198,6 @@ async function doJoin(){
 function subscribe(){
   roomRef.onSnapshot(snap=>{ room=snap.data(); onRoomChange(); });
   myHandRef.onSnapshot(snap=>{ if(snap.exists){ myHand=snap.data(); } render(); });
-  roomRef.collection('voice').orderBy('createdAt').onSnapshot(snap=>{
-    snap.docChanges().forEach(ch=>{
-      if(ch.type==='added'){
-        const d=ch.doc.data();
-        if(d.createdAt>=pageLoadTs && d.uid!==myUid && speakerEnabled){
-          new Audio(d.audio).play().catch(()=>{});
-        }
-      }
-    });
-  });
 }
 
 function onRoomChange(){
@@ -235,6 +226,9 @@ function onRoomChange(){
       botMoving=true;
       setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{botMoving=false;}); }, 500);
     }
+  }
+  if(room.phase==='playing' && (room.currentTrick||[]).length===4 && once('trickfull-'+room.round+'-'+room.trickNum)){
+    setTimeout(resolveCurrentTrick, 2000);
   }
   if(room.phase==='collecting'){
     if(myHand.bid!=null && !(room.revealedBids&&room.revealedBids[myUid]!=null)){
@@ -349,17 +343,25 @@ async function executePlay(uid, seat, card, currentHandCards){
     if(trick.length>=4) return;
     if(((d.leaderSeat||0)+trick.length)%4 !== seat) return;
     trick.push({uid, seat, card});
-    let update={currentTrick:trick};
-    if(trick.length===4){
-      const winnerEntry=currentWinner(trick, d.trumpSuit);
-      const tricksWon={...d.tricksWon}; tricksWon[winnerEntry.uid]=(tricksWon[winnerEntry.uid]||0)+1;
-      if(d.trickNum>=13){ update={currentTrick:[], leaderSeat:winnerEntry.seat, tricksWon, phase:'collecting'}; }
-      else{ update={currentTrick:[], leaderSeat:winnerEntry.seat, tricksWon, trickNum:d.trickNum+1}; }
-    }
-    tx.update(roomRef, update);
+    tx.update(roomRef, {currentTrick:trick});
   });
   const newCards=currentHandCards.filter(c=>!(c.suit===card.suit&&c.rank===card.rank));
   await roomRef.collection('hands').doc(uid).update({cards:newCards});
+}
+
+async function resolveCurrentTrick(){
+  await db.runTransaction(async tx=>{
+    const snap=await tx.get(roomRef); const d=snap.data();
+    if(d.phase!=='playing') return;
+    const trick=d.currentTrick||[];
+    if(trick.length!==4) return;
+    const winnerEntry=currentWinner(trick, d.trumpSuit);
+    const tricksWon={...d.tricksWon}; tricksWon[winnerEntry.uid]=(tricksWon[winnerEntry.uid]||0)+1;
+    let update;
+    if(d.trickNum>=13){ update={currentTrick:[], leaderSeat:winnerEntry.seat, tricksWon, phase:'collecting'}; }
+    else{ update={currentTrick:[], leaderSeat:winnerEntry.seat, tricksWon, trickNum:d.trickNum+1}; }
+    tx.update(roomRef, update);
+  });
 }
 
 async function playCard(suit,rank){
@@ -377,48 +379,6 @@ async function nextRound(){
     const dealerSeat=(d.dealerSeat+1)%4;
     tx.update(roomRef,{phase:'trump', round:d.round+1, dealerSeat, trumpChooserSeat:(dealerSeat+1)%4, trumpSuit:null, cancelReason:''});
   });
-}
-
-function toggleMic(){ micEnabled=!micEnabled; if(!micEnabled && isRecording){ mediaRecorder.stop(); isRecording=false; } render(); }
-function toggleSpeaker(){ speakerEnabled=!speakerEnabled; render(); }
-
-async function toggleRecording(){
-  if(!micEnabled) return;
-  if(!isRecording){
-    try{
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      mediaRecorder=new MediaRecorder(stream);
-      audioChunks=[];
-      mediaRecorder.ondataavailable=e=>audioChunks.push(e.data);
-      mediaRecorder.onstop=async()=>{
-        const blob=new Blob(audioChunks,{type:'audio/webm'});
-        stream.getTracks().forEach(t=>t.stop());
-        await sendVoiceMessage(blob);
-      };
-      mediaRecorder.start();
-      isRecording=true;
-      setTimeout(()=>{ if(isRecording){ mediaRecorder.stop(); isRecording=false; render(); } }, 12000);
-    }catch(e){ alert('Microphone access failed: '+e.message); }
-  } else {
-    mediaRecorder.stop();
-    isRecording=false;
-  }
-  render();
-}
-
-function blobToDataUrl(blob){
-  return new Promise((resolve,reject)=>{
-    const r=new FileReader();
-    r.onload=()=>resolve(r.result);
-    r.onerror=reject;
-    r.readAsDataURL(blob);
-  });
-}
-
-async function sendVoiceMessage(blob){
-  if(blob.size>700000){ alert('That clip is too long — keep messages under ~12 seconds.'); return; }
-  const dataUrl=await blobToDataUrl(blob);
-  await roomRef.collection('voice').add({uid:myUid,name:myName,audio:dataUrl,createdAt:Date.now()});
 }
 
 function render(){
@@ -440,15 +400,9 @@ function renderWaiting(){
 }
 
 function renderGame(){
-  const trumpHtml = room.trumpSuit ? (function(){const si=suitInfo(room.trumpSuit);return `<span class="badge" style="font-size:13px;">${si.sym} K trump</span>`;})() : `<span class="sub" style="margin:0;">Trump not set</span>`;
   let html=`<h1>Call Break</h1>
   <div class="sub" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-    <span>Round ${room.round} \u00b7 dealer ${room.players[room.dealerSeat]?.name||'?'}</span>${trumpHtml}
-  </div>
-  <div class="voicebar">
-    <button class="secondary" onclick="toggleMic()">${micEnabled?'\ud83c\udfa4 Mic on':'\ud83c\udfa4 Mic off'}</button>
-    <button class="secondary" onclick="toggleRecording()" ${micEnabled?'':'disabled'}>${isRecording?'\u23f9 Stop & send':'\ud83d\udd34 Record (12s max)'}</button>
-    <button class="secondary" onclick="toggleSpeaker()">${speakerEnabled?'\ud83d\udd0a Speaker on':'\ud83d\udd07 Speaker off'}</button>
+    <span>Round ${room.round} \u00b7 dealer ${room.players[room.dealerSeat]?.name||'?'}</span>${room.trumpSuit?'':'<span class="sub" style="margin:0;">Trump not set</span>'}
   </div>
   <div class="scoreboard">${room.players.map(p=>`<div class="scorebox"><div class="l">${p.name}</div><div class="n">${(room.scores&&room.scores[p.uid])||0}</div></div>`).join('')}</div>`;
 
@@ -467,7 +421,10 @@ function renderGame(){
   const trickHtml=(room.currentTrick||[]).map(e=>{const si=suitInfo(e.card.suit);const pl=room.players[e.seat];return `<div class="center"><div class="card">${rankLabel(e.card.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span></div><div class="seatinfo">${pl?pl.name:''}</div></div>`;}).join('');
   const midContent = (room.phase==='playing'||room.phase==='reveal') ? `<div class="row" style="justify-content:center;min-height:70px;align-items:center;">${trickHtml||'<span class="sub" style="margin:0;">trick in progress</span>'}</div>` : (room.phase==='cancelled'?`<div class="sub" style="color:var(--danger);margin:0;">round cancelled</div>`:`<div class="sub" style="margin:0;">table</div>`);
 
+  const trumpCornerHtml = room.trumpSuit ? (function(){const si=suitInfo(room.trumpSuit);return `<div class="trump-corner"><div class="rank">K</div><div class="suit" style="color:${si.red?'var(--danger)':'var(--ink)'};">${si.sym}</div></div>`;})() : '';
+
   html+=`<div class="table">
+    ${trumpCornerHtml}
     <div style="grid-area:top;">${seatBox((2+mySeat())%4)}</div>
     <div style="grid-area:left;">${seatBox((3+mySeat())%4)}</div>
     <div style="grid-area:mid;">${midContent}</div>
@@ -505,7 +462,7 @@ function renderControls(){
   }
   if(room.phase==='playing'){
     const seat=(room.currentTrick||[]).length<4 ? seatToAct() : -1;
-    const label = seat===mySeat() ? 'your turn \u2014 pick a card below' : (seat>=0 ? (room.players[seat]?.name||'?')+' is playing\u2026' : 'resolving trick\u2026');
+    const label = seat===mySeat() ? 'your turn \u2014 pick a card below' : (seat>=0 ? (room.players[seat]?.name||'?')+' is playing\u2026' : 'all four cards played \u2014 next trick starting\u2026');
     return `<div class="panel sub" style="margin:0;text-align:center;">Trick ${room.trickNum} of 13 \u00b7 ${label}</div>`;
   }
   if(room.phase==='reveal'){
