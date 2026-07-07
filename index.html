@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Call Break</title>
+<title>Call Break Local</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Fraunces:opsz,wght@9..144,600&display=swap" rel="stylesheet">
 <style>
@@ -27,6 +27,12 @@
   .col{display:flex;flex-direction:column;gap:8px;}
   .center{text-align:center;}
   .table{display:grid;grid-template-columns:1fr 2fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:". top ." "left mid right" ". bottom .";gap:10px;align-items:center;margin:18px 0;}
+  .trickgrid{position:relative;width:100%;min-height:190px;}
+  .trickslot{position:absolute;text-align:center;}
+  .trickslot.top{top:0;left:50%;transform:translateX(-50%);}
+  .trickslot.bottom{bottom:0;left:50%;transform:translateX(-50%);}
+  .trickslot.left{left:0;top:50%;transform:translateY(-50%);}
+  .trickslot.right{right:0;top:50%;transform:translateY(-50%);}
   .scoreboard-wrap{position:relative;}
   .trump-corner{position:absolute;top:-14px;right:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;width:78px;height:107px;border-radius:10px;background:var(--ivory);box-shadow:0 3px 0 rgba(0,0,0,0.3);font-family:'Fraunces',serif;font-weight:700;}
   .trump-corner .rank{font-size:22px;color:var(--ink);line-height:1;}
@@ -112,9 +118,23 @@ let myUid=null, myName='', roomId=null, roomRef=null, myHandRef=null;
 let room=null, myHand={cards:[],bid:null};
 let localTrumpOptions=null, myBidDraft=5;
 let botMoving=false;
+let optimisticCard=null;
+function displayTrick(){
+  let t=(room.currentTrick||[]).slice();
+  if(optimisticCard && !t.some(e=>e.seat===optimisticCard.seat)){
+    t.push({uid:myUid, seat:optimisticCard.seat, card:optimisticCard.card});
+  }
+  return t;
+}
+function displaySeatToAct(){ return ((room.leaderSeat||0) + displayTrick().length) % 4; }
+let showHistory=false;
 const pageLoadTs=Date.now();
 const handled=new Set();
 function once(key){ if(handled.has(key)) return false; handled.add(key); return true; }
+function onceAsync(key, fn){
+  if(!once(key)) return;
+  Promise.resolve().then(fn).catch(e=>{ handled.delete(key); console.error('action failed, will retry:', key, e); });
+}
 
 function mySeat(){ return room && room.players ? room.players.findIndex(p=>p.uid===myUid) : -1; }
 function seatToAct(){ return ((room.leaderSeat||0) + (room.currentTrick||[]).length) % 4; }
@@ -140,10 +160,10 @@ function el(html){ document.getElementById('app').innerHTML=html; }
 
 function renderLanding(){
   if(roomId){
-    el(`<h1>Call Break</h1><div class="sub">Joining room ${roomId}\u2026</div>
+    el(`<h1>Call Break Local</h1><div class="sub">Joining room ${roomId}\u2026</div>
     <div class="panel"><input type="text" id="nameInput" placeholder="Your name" /><div style="height:10px;"></div><button onclick="doJoin()">Join room</button></div>`);
   } else {
-    el(`<h1>Call Break</h1><div class="sub">Create a room, choose how many real players you need, then send the link to the rest.</div>
+    el(`<h1>Call Break Local</h1><div class="sub">Create a room, choose how many real players you need, then send the link to the rest.</div>
     <div class="panel">
       <input type="text" id="nameInput" placeholder="Your name" />
       <div style="height:10px;"></div>
@@ -169,10 +189,10 @@ async function doCreate(humanCount){
   await roomRef.set({
     createdAt: Date.now(), hostUid: myUid, humanCount,
     players,
-    phase:'waiting', round:0, dealerSeat:0, trumpChooserSeat:1,
+    phase:'waiting', round:0, dealSeq:0, dealerSeat:0, trumpChooserSeat:1,
     trumpSuit:null, sideOf:{}, currentTrick:[], leaderSeat:0, trickNum:1,
     tricksWon:{}, scores:{}, revealedBids:{}, roundScores:{}, history:[],
-    readyPlayers:{}, cancelReason:''
+    readyPlayers:{}, cancelReason:'', ruleMode:'local', elevenMode:true
   });
   history.replaceState(null,'','?room='+roomId);
   subscribe();
@@ -192,7 +212,7 @@ async function doJoin(){
       if(d.players.length>=4) throw new Error('Room is full');
       tx.update(roomRef,{players:[...d.players,{uid:myUid,name,isBot:false}]});
     });
-  }catch(e){ el(`<h1>Call Break</h1><div class="panel">${e.message}</div>`); return; }
+  }catch(e){ el(`<h1>Call Break Local</h1><div class="panel">${e.message}</div>`); return; }
   subscribe();
 }
 
@@ -203,22 +223,24 @@ function subscribe(){
 
 function onRoomChange(){
   if(!room){ render(); return; }
+  const seq=room.dealSeq||0;
+  if((room.currentTrick||[]).length===0){ optimisticCard=null; }
 
-  if(room.phase==='trump' && !room.trumpSuit && isBotUid(room.players[room.trumpChooserSeat].uid) && myUid===room.hostUid && once('trumpbot-'+room.round)){
-    roomRef.update({trumpSuit: SUITS[Math.floor(Math.random()*4)].key});
+  if(room.phase==='trump' && !room.trumpSuit && isBotUid(room.players[room.trumpChooserSeat].uid) && myUid===room.hostUid){
+    onceAsync('trumpbot-'+seq, ()=>roomRef.update({trumpSuit: SUITS[Math.floor(Math.random()*4)].key}));
   }
-  if(room.phase==='trump' && room.trumpSuit && iAmResponsibleForSeat(room.dealerSeat) && once('deal-'+room.round)){
-    performDeal();
+  if(room.phase==='trump' && room.trumpSuit && iAmResponsibleForSeat(room.dealerSeat)){
+    onceAsync('deal-'+seq, performDeal);
   }
   if(room.phase==='bidding'){
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && myUid===room.hostUid && !(room.readyPlayers&&room.readyPlayers[p.uid]) && once('botbid-'+p.uid+'-'+room.round)){
-        doBotBid(p.uid);
+      if(isBotUid(p.uid) && myUid===room.hostUid && !(room.readyPlayers&&room.readyPlayers[p.uid])){
+        onceAsync('botbid-'+p.uid+'-'+seq, ()=>doBotBid(p.uid));
       }
     });
     const ready=room.readyPlayers||{};
-    if(room.players.every(p=>ready[p.uid]) && once('start-'+room.round)){
-      tryStartPlaying();
+    if(room.players.every(p=>ready[p.uid])){
+      onceAsync('start-'+seq, tryStartPlaying);
     }
   }
   if(room.phase==='playing' && (room.currentTrick||[]).length<4){
@@ -228,21 +250,31 @@ function onRoomChange(){
       setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{ botMoving=false; onRoomChange(); }); }, 500);
     }
   }
-  if(room.phase==='playing' && (room.currentTrick||[]).length===4 && once('trickfull-'+room.round+'-'+room.trickNum)){
-    setTimeout(resolveCurrentTrick, 2000);
+  if(room.phase==='playing' && (room.currentTrick||[]).length===4){
+    onceAsync('trickfull-'+seq+'-'+room.trickNum, ()=>new Promise(res=>setTimeout(()=>resolveCurrentTrick().then(res).catch(res),2000)));
+  }
+  if(room.cancelRequest){
+    room.players.forEach(p=>{
+      if(isBotUid(p.uid) && myUid===room.hostUid && !room.cancelRequest.votes[p.uid]){
+        onceAsync('cancelbotvote-'+p.uid+'-'+room.cancelRequest.id, ()=>roomRef.update({['cancelRequest.votes.'+p.uid]:true}));
+      }
+    });
+    if(room.players.every(p=>room.cancelRequest.votes[p.uid])){
+      onceAsync('cancelapply-'+room.cancelRequest.id, applyCancelRound);
+    }
   }
   if(room.phase==='collecting'){
     if(myHand.bid!=null && !(room.revealedBids&&room.revealedBids[myUid]!=null)){
       roomRef.update({['revealedBids.'+myUid]: myHand.bid});
     }
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && myUid===room.hostUid && !(room.revealedBids&&room.revealedBids[p.uid]!=null) && once('botreveal-'+p.uid+'-'+room.round)){
-        revealBotBid(p.uid);
+      if(isBotUid(p.uid) && myUid===room.hostUid && !(room.revealedBids&&room.revealedBids[p.uid]!=null)){
+        onceAsync('botreveal-'+p.uid+'-'+seq, ()=>revealBotBid(p.uid));
       }
     });
     const uids=room.players.map(p=>p.uid);
-    if(uids.every(u=>room.revealedBids&&room.revealedBids[u]!=null) && once('finish-'+room.round)){
-      tryFinishRound();
+    if(uids.every(u=>room.revealedBids&&room.revealedBids[u]!=null)){
+      onceAsync('finish-'+seq, tryFinishRound);
     }
   }
   render();
@@ -254,29 +286,35 @@ async function performDeal(){
   for(let i=0;i<4;i++) hands[i]=sortHand(deck.slice(i*13,(i+1)*13), room.trumpSuit);
   const noTrumpVoid=hands.some(h=>h.filter(c=>c.suit===room.trumpSuit).length===0);
   const noFaceCard=hands.some(h=>h.filter(c=>c.rank>=11).length===0);
-  if(noTrumpVoid||noFaceCard){
-    await roomRef.update({phase:'cancelled', cancelReason: noTrumpVoid?'a player had no trump cards':'a player had no ace, king, queen, or jack'});
+  const allFourAces = room.ruleMode==='local' && hands.some(h=>SUITS.every(s=>h.some(c=>c.suit===s.key&&c.rank===14)));
+  if(noTrumpVoid||noFaceCard||allFourAces){
+    const reason = noTrumpVoid?'a player had no trump cards':noFaceCard?'a player had no ace, king, queen, or jack':'a player was dealt all four Aces';
+    await roomRef.update({phase:'cancelled', cancelReason: reason});
     setTimeout(performDeal,1600);
     return;
   }
   const nonTrump=SUITS.map(s=>s.key).filter(k=>k!==room.trumpSuit);
   const sideOf={}; const tricksWon={};
-  const batch=db.batch();
   room.players.forEach((p,i)=>{
     sideOf[p.uid]=nonTrump.some(suit=>hands[i].filter(c=>c.suit===suit).length===0);
     tricksWon[p.uid]=0;
-    batch.set(roomRef.collection('hands').doc(p.uid), {cards:hands[i], bid:null});
   });
-  batch.update(roomRef, {phase:'bidding', sideOf, tricksWon, revealedBids:{}, currentTrick:[], leaderSeat:room.trumpChooserSeat, trickNum:1, readyPlayers:{}, cancelReason:''});
-  await batch.commit();
+  await db.runTransaction(async tx=>{
+    const snap=await tx.get(roomRef); const d=snap.data();
+    if(d.phase!=='trump' || d.trumpSuit!==room.trumpSuit) return;
+    tx.update(roomRef, {phase:'bidding', sideOf, tricksWon, revealedBids:{}, currentTrick:[], leaderSeat:d.trumpChooserSeat, trickNum:1, readyPlayers:{}, cancelReason:''});
+    room.players.forEach((p,i)=>{ tx.set(roomRef.collection('hands').doc(p.uid), {cards:hands[i], bid:null}); });
+  });
 }
 
 async function doBotBid(uid){
   const snap=await roomRef.collection('hands').doc(uid).get();
   const hand=snap.data().cards;
   const bid=estimateBid(hand, room.trumpSuit);
-  await roomRef.collection('hands').doc(uid).update({bid});
-  await roomRef.update({['readyPlayers.'+uid]:true});
+  const batch=db.batch();
+  batch.update(roomRef.collection('hands').doc(uid), {bid});
+  batch.update(roomRef, {['readyPlayers.'+uid]:true});
+  await batch.commit();
 }
 
 async function revealBotBid(uid){
@@ -306,21 +344,30 @@ async function tryFinishRound(){
     if(d.phase!=='collecting') return;
     const uids=d.players.map(p=>p.uid);
     if(!uids.every(u=>d.revealedBids&&d.revealedBids[u]!=null)) return;
+    const totalBids=uids.reduce((sum,u)=>sum+(d.revealedBids[u]||0),0);
+    const isLocal = d.ruleMode==='local';
     const roundScores={}; const scores={...d.scores};
     uids.forEach(u=>{
       const bid=d.revealedBids[u], won=d.tricksWon[u]||0, diff=won-bid;
-      let sc = diff<0 ? -bid : (diff<=1 ? bid : -bid);
-      if(bid===8 && won===8) sc+=8;
+      let sc;
+      if(!isLocal){
+        sc = diff===0 ? bid : -bid;
+      } else {
+        if(diff<0) sc=-bid;
+        else if(diff<=1) sc=bid;
+        else sc = (d.elevenMode && totalBids>=11) ? bid : -bid;
+        if(bid===8 && won===8) sc+=8;
+      }
       roundScores[u]=sc; scores[u]=(scores[u]||0)+sc;
     });
-    const historyEntry={round:d.round, bids:d.revealedBids, tricksWon:d.tricksWon, roundScores};
+    const historyEntry={round:d.round, bids:d.revealedBids, tricksWon:d.tricksWon, roundScores, ruleMode:d.ruleMode, elevenMode:d.elevenMode};
     tx.update(roomRef,{phase:'reveal', roundScores, scores, history:(d.history||[]).concat([historyEntry])});
   });
 }
 
 async function startGame(){
   const scores={}; room.players.forEach(p=>scores[p.uid]=0);
-  await roomRef.update({phase:'trump', round:1, dealerSeat:0, trumpChooserSeat:1, trumpSuit:null, scores});
+  await roomRef.update({phase:'trump', round:1, dealSeq:1, dealerSeat:0, trumpChooserSeat:1, trumpSuit:null, scores});
 }
 
 async function chooseTrump(idx){
@@ -345,9 +392,9 @@ async function executePlay(uid, seat, card, currentHandCards){
     if(((d.leaderSeat||0)+trick.length)%4 !== seat) return;
     trick.push({uid, seat, card});
     tx.update(roomRef, {currentTrick:trick});
+    const newCards=currentHandCards.filter(c=>!(c.suit===card.suit&&c.rank===card.rank));
+    tx.update(roomRef.collection('hands').doc(uid), {cards:newCards});
   });
-  const newCards=currentHandCards.filter(c=>!(c.suit===card.suit&&c.rank===card.rank));
-  await roomRef.collection('hands').doc(uid).update({cards:newCards});
 }
 
 async function resolveCurrentTrick(){
@@ -370,7 +417,10 @@ async function playCard(suit,rank){
   const card={suit,rank};
   const valid=computeValidCards(myHand.cards, room.currentTrick||[], room.trumpSuit);
   if(!valid.some(c=>c.suit===suit&&c.rank===rank)) return;
+  optimisticCard={seat:mySeat(), card};
+  render();
   await executePlay(myUid, mySeat(), card, myHand.cards);
+  optimisticCard=null;
 }
 
 async function nextRound(){
@@ -378,10 +428,38 @@ async function nextRound(){
     const snap=await tx.get(roomRef); const d=snap.data();
     if(d.phase!=='reveal') return;
     const dealerSeat=(d.dealerSeat+1)%4;
-    tx.update(roomRef,{phase:'trump', round:d.round+1, dealerSeat, trumpChooserSeat:(dealerSeat+1)%4, trumpSuit:null, cancelReason:''});
+    tx.update(roomRef,{phase:'trump', round:d.round+1, dealSeq:(d.dealSeq||0)+1, dealerSeat, trumpChooserSeat:(dealerSeat+1)%4, trumpSuit:null, cancelReason:''});
   });
 }
 
+// ---------- Rule mode ----------
+async function setRuleMode(mode){
+  await roomRef.update({ruleMode:mode});
+}
+async function toggleElevenMode(){
+  await roomRef.update({elevenMode: !room.elevenMode});
+}
+
+// ---------- Cancel-round (needs everyone's agreement) ----------
+async function requestCancelRound(){
+  const newId=(room.cancelRequestId||0)+1;
+  await roomRef.update({cancelRequestId:newId, cancelRequest:{id:newId, votes:{[myUid]:true}}});
+}
+
+async function respondCancelRound(accept){
+  if(!accept){ await roomRef.update({cancelRequest:null}); return; }
+  await roomRef.update({['cancelRequest.votes.'+myUid]:true});
+}
+
+async function applyCancelRound(){
+  await db.runTransaction(async tx=>{
+    const snap=await tx.get(roomRef); const d=snap.data();
+    if(!d.cancelRequest) return;
+    tx.update(roomRef,{phase:'trump', trumpSuit:null, dealSeq:(d.dealSeq||0)+1, trumpChooserSeat:(d.dealerSeat+1)%4, cancelRequest:null, cancelReason:''});
+  });
+}
+
+// ---------- Rendering ----------
 function render(){
   if(!room){ return; }
   if(room.phase==='waiting'){ renderWaiting(); return; }
@@ -392,7 +470,7 @@ function renderWaiting(){
   const link=location.origin+location.pathname+'?room='+roomId;
   const list=room.players.map(p=>`<div class="seat"><div class="seatname">${p.name}${p.uid===room.hostUid?' <span class="badge">host</span>':''}${p.isBot?' <span class="badge">computer</span>':''}</div></div>`).join('');
   const canStart = room.hostUid===myUid && room.players.length===4;
-  el(`<h1>Call Break</h1><div class="sub">Room ${roomId} \u2014 ${room.players.length}/4 seats filled</div>
+  el(`<h1>Call Break Local</h1><div class="sub">Room ${roomId} \u2014 ${room.players.length}/4 seats filled</div>
   <div class="panel">
     <div class="linkbox"><input type="text" readonly value="${link}" onclick="this.select()" /><button class="secondary" onclick="navigator.clipboard.writeText('${link}')">Copy link</button></div>
   </div>
@@ -402,16 +480,20 @@ function renderWaiting(){
 
 function renderGame(){
   const trumpCornerHtml = room.trumpSuit ? (function(){const si=suitInfo(room.trumpSuit);return `<div class="trump-corner"><div class="rank">K</div><div class="suit" style="color:${si.red?'var(--danger)':'var(--ink)'};">${si.sym}</div></div>`;})() : '';
-  let html=`<h1>Call Break</h1>
+  let html=`<h1>Call Break Local</h1>
   <div class="sub" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
     <span>Round ${room.round} \u00b7 dealer ${room.players[room.dealerSeat]?.name||'?'}</span>${room.trumpSuit?'':'<span class="sub" style="margin:0;">Trump not set</span>'}
   </div>
   <div class="scoreboard-wrap">
     ${trumpCornerHtml}
     <div class="scoreboard">${room.players.map(p=>`<div class="scorebox"><div class="l">${p.name}</div><div class="n">${(room.scores&&room.scores[p.uid])||0}</div></div>`).join('')}</div>
-  </div>`;
+  </div>
+  ${renderRulePanel()}
+  ${renderSideOfPopup()}
+  ${renderCancelBar()}`;
 
-  const active=(room.phase==='playing' && (room.currentTrick||[]).length<4) ? seatToAct() : -1;
+  const trick=displayTrick();
+  const active=(room.phase==='playing' && trick.length<4) ? displaySeatToAct() : -1;
   const showSideOf = room.phase!=='trump' && room.phase!=='cancelled' && room.phase!=='waiting';
   const seatBox=(i)=>{
     const p=room.players[i]; if(!p) return '<div></div>';
@@ -423,8 +505,19 @@ function renderGame(){
     else if(room.phase==='bidding'){ info = p.uid===myUid ? `bid ${myBidDraft}` : ((room.readyPlayers&&room.readyPlayers[p.uid])?'ready':'bidding\u2026'); }
     return `<div class="seat ${isActive?'active':''}"><div class="seatname">${p.name}${isDealer?' <span class="badge">dealer</span>':''}${sideBadge}</div><div class="seatinfo">${info}</div></div>`;
   };
-  const trickHtml=(room.currentTrick||[]).map(e=>{const si=suitInfo(e.card.suit);const pl=room.players[e.seat];return `<div class="center"><div class="card">${rankLabel(e.card.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span></div><div class="seatinfo">${pl?pl.name:''}</div></div>`;}).join('');
-  const midContent = (room.phase==='playing'||room.phase==='reveal') ? `<div class="row" style="justify-content:center;min-height:70px;align-items:center;">${trickHtml||'<span class="sub" style="margin:0;">trick in progress</span>'}</div>` : (room.phase==='cancelled'?`<div class="sub" style="color:var(--danger);margin:0;">round cancelled</div>`:`<div class="sub" style="margin:0;">table</div>`);
+  const trickBySlot={top:null,left:null,right:null,bottom:null};
+  trick.forEach(e=>{
+    const rel=((e.seat-mySeat())+4)%4;
+    const slot = rel===0?'bottom':rel===1?'right':rel===2?'top':'left';
+    trickBySlot[slot]=e;
+  });
+  const slotHtml=(slot)=>{
+    const e=trickBySlot[slot]; if(!e) return '';
+    const si=suitInfo(e.card.suit); const pl=room.players[e.seat];
+    return `<div class="trickslot ${slot}"><div class="card" style="cursor:default;">${rankLabel(e.card.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span></div><div class="seatinfo">${pl?pl.name:''}</div></div>`;
+  };
+  const anyCard = trick.length>0;
+  const midContent = (room.phase==='playing'||room.phase==='reveal') ? `<div class="trickgrid">${anyCard? slotHtml('top')+slotHtml('left')+slotHtml('right')+slotHtml('bottom') : '<div class="center sub" style="margin:0;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);">trick in progress</div>'}</div>` : (room.phase==='cancelled'?`<div class="sub" style="color:var(--danger);margin:0;">round cancelled</div>`:`<div class="sub" style="margin:0;">table</div>`);
 
   html+=`<div class="table">
     <div style="grid-area:top;">${seatBox((2+mySeat())%4)}</div>
@@ -469,9 +562,12 @@ function renderControls(){
   }
   if(room.phase==='reveal'){
     const last=room.history[room.history.length-1];
-    const rows=room.players.map(p=>{const bid=last.bids[p.uid],won=last.tricksWon[p.uid],sc=last.roundScores[p.uid];const diff=won-bid;const note=(diff===1 && !(bid===8&&won===8))?' <span class="sub" style="margin:0;">(1 over, ok)</span>':'';return `<tr><td>${p.name}</td><td class="center">${bid}</td><td class="center">${won}</td><td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${(bid===8&&won===8)?' \u2605':''}${note}</td></tr>`;}).join('');
+    const totalBids=Object.values(last.bids).reduce((a,b)=>a+b,0);
+    const wasLocal = last.ruleMode==='local';
+    const rows=room.players.map(p=>{const bid=last.bids[p.uid],won=last.tricksWon[p.uid],sc=last.roundScores[p.uid];const diff=won-bid;let note='';if(wasLocal && diff===1 && !(bid===8&&won===8)){note=' <span class="sub" style="margin:0;">(1 over, ok)</span>';}else if(wasLocal && diff>=2 && last.elevenMode && totalBids>=11){note=` <span class="sub" style="margin:0;">(${diff} over, forgiven \u2014 total bids ${totalBids})</span>`;}return `<tr><td>${p.name}</td><td class="center">${bid}</td><td class="center">${won}</td><td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}${(wasLocal&&bid===8&&won===8)?' \u2605':''}${note}</td></tr>`;}).join('');
     const nextDealer=room.players[(room.dealerSeat+1)%4];
     return `<div class="panel"><table class="hist"><tr class="sub"><td>Player</td><td class="center">Bid</td><td class="center">Won</td><td class="center">Score</td></tr>${rows}</table>
+    <div class="sub" style="margin:6px 0 10px;">${wasLocal?`Total bids this round: ${totalBids}`:'Scored under Default rules'}</div>
     <div class="sub" style="margin:10px 0;">Next dealer: ${nextDealer?nextDealer.name:'?'} \u00b7 rotates anticlockwise</div>
     <div class="center"><button onclick="nextRound()">Play next round</button></div></div>`;
   }
@@ -480,19 +576,58 @@ function renderControls(){
 
 function renderHand(){
   if(room.phase==='trump'||room.phase==='cancelled'||room.phase==='reveal'||room.phase==='waiting') return '';
-  const hand=myHand.cards||[];
+  let hand=myHand.cards||[];
+  if(optimisticCard){ hand=hand.filter(c=>!(c.suit===optimisticCard.card.suit&&c.rank===optimisticCard.card.rank)); }
   let valid=hand;
   if(room.phase==='playing'){
-    valid = (mySeat()===seatToAct() && (room.currentTrick||[]).length<4) ? computeValidCards(hand, room.currentTrick||[], room.trumpSuit) : [];
+    valid = (!optimisticCard && mySeat()===seatToAct() && (room.currentTrick||[]).length<4) ? computeValidCards(hand, room.currentTrick||[], room.trumpSuit) : [];
   }
   return `<div class="row" style="justify-content:center;padding-top:12px;border-top:1px solid var(--felt-light);">${hand.map(c=>{const si=suitInfo(c.suit);const isValid=valid.some(v=>v.suit===c.suit&&v.rank===c.rank);const clickable=room.phase==='playing'&&isValid;return `<div class="card${clickable?'':' disabled'}" ${clickable?`onclick="playCard('${c.suit}',${c.rank})"`:''}>${rankLabel(c.rank)}<span style="color:${si.red?'var(--danger)':'inherit'};">${si.sym}</span></div>`;}).join('')}</div>`;
 }
 
+function toggleHistory(){ showHistory=!showHistory; render(); }
+
 function renderHistory(){
   if(!room.history || room.history.length===0) return '';
+  if(!showHistory) return `<div class="center" style="margin-bottom:16px;"><button class="secondary" onclick="toggleHistory()">Show round history</button></div>`;
   const header=`<tr class="sub"><td>Round</td>${room.players.map(p=>`<td class="center">${p.name}</td>`).join('')}</tr>`;
   const rows=room.history.map(h=>`<tr><td>${h.round}</td>${room.players.map(p=>{const sc=h.roundScores[p.uid];return `<td class="center" style="color:${sc>=0?'var(--success)':'var(--danger)'};">${sc>=0?'+':''}${sc}</td>`;}).join('')}</tr>`).join('');
-  return `<div class="panel"><div class="sub" style="margin-bottom:8px;">Round history</div><table class="hist">${header}${rows}</table></div>`;
+  return `<div class="panel"><div class="sub" style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">Round history <button class="secondary" onclick="toggleHistory()">Hide</button></div><table class="hist">${header}${rows}</table></div>`;
+}
+
+function renderRulePanel(){
+  if(room.phase==='waiting') return '';
+  const isHost = myUid===room.hostUid;
+  const label = room.ruleMode==='local' ? `Local rules \u00b7 11 mode ${room.elevenMode?'on':'off'}` : 'Default rules';
+  if(!isHost) return `<div class="sub" style="margin:-8px 0 16px;">${label}</div>`;
+  return `<div class="panel">
+    <div class="sub" style="margin-bottom:8px;">${label}</div>
+    <div class="row">
+      <button class="secondary" onclick="setRuleMode('default')">Default rules</button>
+      <button class="secondary" onclick="setRuleMode('local')">Local rules</button>
+      ${room.ruleMode==='local' ? `<button class="secondary" onclick="toggleElevenMode()">11 mode: ${room.elevenMode?'On':'Off'}</button>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderSideOfPopup(){
+  if(room.phase!=='bidding') return '';
+  const flagged=room.players.filter(p=>room.sideOf && room.sideOf[p.uid]);
+  if(flagged.length===0) return '';
+  return `<div class="panel" style="border:1px solid var(--gold);"><div class="sub" style="margin:0;">\u26a0\ufe0f Side of: ${flagged.map(p=>p.name).join(', ')} \u2014 void in one suit each (which one stays hidden). This clears once everyone's ready.</div></div>`;
+}
+
+function renderCancelBar(){
+  if(!['trump','bidding','playing'].includes(room.phase)) return '';
+  if(room.cancelRequest){
+    const votesCount=room.players.filter(p=>room.cancelRequest.votes[p.uid]).length;
+    const iVoted=room.cancelRequest.votes[myUid];
+    return `<div class="panel" style="border:1px solid var(--gold);">
+      <div class="sub" style="margin-bottom:8px;">Cancel-round requested \u2014 ${votesCount}/4 accepted.</div>
+      ${iVoted ? `<div class="sub" style="margin:0;">You accepted. Waiting for everyone else\u2026</div>` : `<div class="row"><button onclick="respondCancelRound(true)">Accept cancel</button><button class="secondary" onclick="respondCancelRound(false)">Decline</button></div>`}
+    </div>`;
+  }
+  return `<div class="center" style="margin-bottom:16px;"><button class="secondary" onclick="requestCancelRound()">Cancel this round</button></div>`;
 }
 </script>
 </body>
