@@ -138,12 +138,6 @@ function onceAsync(key, fn){
 
 function mySeat(){ return room && room.players ? room.players.findIndex(p=>p.uid===myUid) : -1; }
 function seatToAct(){ return ((room.leaderSeat||0) + (room.currentTrick||[]).length) % 4; }
-function iAmResponsibleForSeat(seatIdx){
-  const p=room.players[seatIdx]; if(!p) return false;
-  if(p.uid===myUid) return true;
-  if(isBotUid(p.uid) && myUid===room.hostUid) return true;
-  return false;
-}
 
 auth.onAuthStateChanged(user=>{
   if(user){ myUid=user.uid; boot(); }
@@ -227,15 +221,15 @@ function onRoomChange(){
   const seq=room.dealSeq||0;
   if((room.currentTrick||[]).length===0){ optimisticCard=null; }
 
-  if(room.phase==='trump' && !room.trumpSuit && isBotUid(room.players[room.trumpChooserSeat].uid) && myUid===room.hostUid){
+  if(room.phase==='trump' && !room.trumpSuit && isBotUid(room.players[room.trumpChooserSeat].uid)){
     onceAsync('trumpbot-'+seq, ()=>roomRef.update({trumpSuit: SUITS[Math.floor(Math.random()*4)].key}));
   }
-  if(room.phase==='trump' && room.trumpSuit && iAmResponsibleForSeat(room.dealerSeat)){
+  if(room.phase==='trump' && room.trumpSuit){
     onceAsync('deal-'+seq, performDeal);
   }
   if(room.phase==='bidding'){
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && myUid===room.hostUid && !(room.readyPlayers&&room.readyPlayers[p.uid])){
+      if(isBotUid(p.uid) && !(room.readyPlayers&&room.readyPlayers[p.uid])){
         onceAsync('botbid-'+p.uid+'-'+seq, ()=>doBotBid(p.uid));
       }
     });
@@ -246,7 +240,7 @@ function onRoomChange(){
   }
   if(room.phase==='playing' && (room.currentTrick||[]).length<4){
     const seat=seatToAct(); const p=room.players[seat];
-    if(p && isBotUid(p.uid) && myUid===room.hostUid && !botMoving){
+    if(p && isBotUid(p.uid) && !botMoving){
       botMoving=true;
       setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{ botMoving=false; onRoomChange(); }); }, 500);
     }
@@ -256,7 +250,7 @@ function onRoomChange(){
   }
   if(room.cancelRequest){
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && myUid===room.hostUid && !room.cancelRequest.votes[p.uid]){
+      if(isBotUid(p.uid) && !room.cancelRequest.votes[p.uid]){
         onceAsync('cancelbotvote-'+p.uid+'-'+room.cancelRequest.id, ()=>roomRef.update({['cancelRequest.votes.'+p.uid]:true}));
       }
     });
@@ -269,7 +263,7 @@ function onRoomChange(){
       roomRef.update({['revealedBids.'+myUid]: myHand.bid});
     }
     room.players.forEach(p=>{
-      if(isBotUid(p.uid) && myUid===room.hostUid && !(room.revealedBids&&room.revealedBids[p.uid]!=null)){
+      if(isBotUid(p.uid) && !(room.revealedBids&&room.revealedBids[p.uid]!=null)){
         onceAsync('botreveal-'+p.uid+'-'+seq, ()=>revealBotBid(p.uid));
       }
     });
