@@ -299,7 +299,7 @@ async function performDeal(){
     });
     await db.runTransaction(async tx=>{
       const snap=await tx.get(roomRef); const d=snap.data();
-      if(d.phase!=='trump' || d.trumpSuit!==room.trumpSuit) return;
+      if((d.phase!=='trump' && d.phase!=='cancelled') || d.trumpSuit!==room.trumpSuit) return;
       tx.update(roomRef, {phase:'bidding', sideOf, tricksWon, revealedBids:{}, currentTrick:[], leaderSeat:d.trumpChooserSeat, trickNum:1, readyPlayers:{}, cancelReason:''});
       room.players.forEach((p,i)=>{ tx.set(roomRef.collection('hands').doc(p.uid), {cards:hands[i], bid:null}); });
     });
