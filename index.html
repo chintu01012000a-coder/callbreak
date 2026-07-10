@@ -213,7 +213,7 @@ async function doJoin(){
 function subscribe(){
   roomRef.onSnapshot(snap=>{ room=snap.data(); onRoomChange(); });
   myHandRef.onSnapshot(snap=>{ if(snap.exists){ myHand=snap.data(); } render(); });
-  setInterval(()=>{ if(room) onRoomChange(); }, 2500);
+  setInterval(()=>{ if(room) onRoomChange(); }, 200);
 }
 
 function onRoomChange(){
@@ -228,7 +228,7 @@ function onRoomChange(){
     onceAsync('deal-'+seq, performDeal);
   }
   if(room.phase==='cancelled'){
-    onceAsync('redeal-'+(room.redealAttempt||0), ()=>new Promise(res=>setTimeout(()=>performDeal().then(res).catch(res), 600)));
+    onceAsync('redeal-'+(room.redealAttempt||0), ()=>new Promise(res=>setTimeout(()=>performDeal().then(res).catch(res), 100)));
   }
   if(room.phase==='bidding'){
     room.players.forEach(p=>{
@@ -245,11 +245,11 @@ function onRoomChange(){
     const seat=seatToAct(); const p=room.players[seat];
     if(p && isBotUid(p.uid) && !botMoving){
       botMoving=true;
-      setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{ botMoving=false; onRoomChange(); }); }, 250);
+      setTimeout(()=>{ doBotPlay(p.uid, seat).finally(()=>{ botMoving=false; onRoomChange(); }); }, 100);
     }
   }
   if(room.phase==='playing' && (room.currentTrick||[]).length===4){
-    onceAsync('trickfull-'+seq+'-'+room.trickNum, ()=>new Promise(res=>setTimeout(()=>resolveCurrentTrick().then(res).catch(res),1000)));
+    onceAsync('trickfull-'+seq+'-'+room.trickNum, ()=>new Promise(res=>setTimeout(()=>resolveCurrentTrick().then(res).catch(res),100)));
   }
   if(room.cancelRequest){
     room.players.forEach(p=>{
