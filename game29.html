@@ -425,7 +425,7 @@ function pushState(){
   if(!ROOM_CODE) return;
   db.collection(ROOMS).doc(ROOM_CODE).collection('state').doc('current')
     .set({ blob: JSON.stringify(G), updatedAt: Date.now() })
-    .catch(e=>console.error('pushState error', e));
+    .catch(e=>{ console.error('pushState error', e); alert('Could not sync game state: '+e.message); });
 }
 function subscribeState(){
   if(unsubState) unsubState();
@@ -436,7 +436,7 @@ function subscribeState(){
       G = JSON.parse(data.blob);
       renderAll();
       resumeFlow();
-    });
+    }, e=>{ console.error('subscribeState error', e); alert('Lost connection to the game: '+e.message); });
 }
 function subscribeRoom(code){
   if(unsubRoom) unsubRoom();
@@ -455,7 +455,7 @@ function subscribeRoom(code){
       document.getElementById('newGameBtn').classList.toggle('hiddenBtn', !IS_HOST);
       if(!unsubState) subscribeState();
     }
-  });
+  }, e=>{ console.error('subscribeRoom error', e); alert('Could not load the room: '+e.message+'\n\nThis usually means Firestore security rules are blocking the "game29_rooms" collection.'); });
 }
 
 /* ---------------- SCREEN MANAGEMENT ---------------- */
@@ -510,12 +510,17 @@ function createRoom(hostName, numComputers){
   for(let i=1;i<4;i++) if(!seats[i]) seats[i] = {type:'human', uid:null, name:null};
   const humansNeeded = seats.filter(s=>s.type==='human').length;
   const status = humansNeeded<=1 ? 'seating' : 'lobby';
+  document.querySelectorAll('#screenHostSetup [data-cpu]').forEach(b=>b.disabled=true);
   db.collection(ROOMS).doc(code).set({
     hostUid: myUid, numComputers, humansNeeded, status, seats,
     boardMode:null, createdAt: Date.now()
   }).then(()=>{
     ROOM_CODE = code;
     subscribeRoom(code);
+  }).catch(e=>{
+    document.querySelectorAll('#screenHostSetup [data-cpu]').forEach(b=>b.disabled=false);
+    alert('Could not create the room: '+e.message+'\n\nThis usually means the Firestore security rules for this Firebase project need to allow the "game29_rooms" collection.');
+    console.error('createRoom error', e);
   });
 }
 
@@ -635,7 +640,10 @@ function onSeatTileTap(seatIdx){
   const a = seats[selectedSeatTile], b = seats[seatIdx];
   seats[selectedSeatTile] = b; seats[seatIdx] = a;
   selectedSeatTile = null;
-  db.collection(ROOMS).doc(ROOM_CODE).update({seats});
+  db.collection(ROOMS).doc(ROOM_CODE).update({seats}).catch(e=>{
+    console.error('seat swap error', e);
+    alert('Could not update seats: '+e.message);
+  });
 }
 
 function startGame(){
