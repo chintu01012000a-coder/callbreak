@@ -162,35 +162,44 @@ body{
 #slotRight{ right:6px; top:50%; transform:translateY(-50%);}
 
 .trumpseed{
-  position:absolute; top:4px; left:4px; width:30px; height:42px; border-radius:5px;
+  position:absolute; top:4px; right:4px; width:30px; height:42px; border-radius:5px;
   background:linear-gradient(135deg, #3a2b0e, #1c1712);
   border:1.5px solid var(--gold);
   display:flex; align-items:center; justify-content:center;
   font-size:9px; text-align:center; color:var(--gold-soft); font-family:'Cinzel';
 }
 .trumpseed.revealed{ background:var(--cream); color:var(--ink); }
+.centerActions{
+  position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:16;
+  display:flex; flex-direction:column; gap:6px; align-items:center;
+}
+.centerActions:empty{ display:none; }
+.centerActions .btn{
+  background:rgba(6,32,24,0.9); box-shadow:0 4px 10px rgba(0,0,0,0.4);
+}
 
 /* ---- hand ---- */
 .handzone{ display:flex; flex-direction:column; justify-content:flex-end; padding-bottom:4px;}
-.hand{ display:flex; justify-content:center; padding:2px 0; min-height:92px; }
+.hand{ display:flex; justify-content:flex-start; padding:2px 14px; min-height:300px;
+  overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch; }
 .card{
-  width:56px; height:82px; background:var(--cream); border-radius:7px;
-  margin-left:-20px; box-shadow:0 3px 6px rgba(0,0,0,0.4);
-  border:1px solid rgba(0,0,0,0.15);
-  display:flex; flex-direction:column; justify-content:space-between; padding:4px 5px;
+  width:204px; height:300px; background:var(--cream); border-radius:20px;
+  margin-left:-72px; box-shadow:0 4px 10px rgba(0,0,0,0.45);
+  border:1px solid rgba(0,0,0,0.15); flex-shrink:0;
+  display:flex; flex-direction:column; justify-content:space-between; padding:12px 14px;
   color:var(--ink); font-weight:700; position:relative; transition: transform .15s ease;
 }
 .card:first-child{margin-left:0;}
 .card.red{color:var(--red);}
-.card.playable{ transform:translateY(-10px); box-shadow:0 6px 10px rgba(0,0,0,0.5);}
+.card.playable{ transform:translateY(-24px); box-shadow:0 12px 20px rgba(0,0,0,0.55);}
 .card.disabled{ filter:grayscale(0.6) brightness(0.75);}
-.card .rank{font-size:15px; font-family:'Cinzel',serif;}
-.card .suit{font-size:20px; align-self:center;}
+.card .rank{font-size:44px; font-family:'Cinzel',serif;}
+.card .suit{font-size:64px; align-self:center;}
 .card .rank.bottom{ align-self:flex-end; transform:rotate(180deg); }
 
-.trickcard{ width:44px; height:62px; }
-.trickcard .rank{font-size:12px;}
-.trickcard .suit{font-size:15px;}
+.trickcard{ width:52px; height:74px; }
+.trickcard .rank{font-size:13px;}
+.trickcard .suit{font-size:17px;}
 
 /* ---- action panel ---- */
 .panel{
@@ -297,6 +306,7 @@ body{
 
       <div class="centerTrick" id="centerTrick">
         <div class="trumpseed" id="trumpSeed">trump<br>hidden</div>
+        <div class="centerActions" id="centerActions"></div>
         <div class="trickslot" id="slotBottom"></div>
         <div class="trickslot" id="slotLeft"></div>
         <div class="trickslot" id="slotTop"></div>
@@ -423,6 +433,7 @@ function slotOf(seat){
 /* ---------------- FIREBASE PLUMBING ---------------- */
 function pushState(){
   if(!ROOM_CODE) return;
+  G.seq = (G.seq||0) + 1;
   db.collection(ROOMS).doc(ROOM_CODE).collection('state').doc('current')
     .set({ blob: JSON.stringify(G), updatedAt: Date.now() })
     .catch(e=>{ console.error('pushState error', e); alert('Could not sync game state: '+e.message); });
@@ -433,7 +444,9 @@ function subscribeState(){
     .onSnapshot(doc=>{
       if(!doc.exists) return;
       const data = doc.data();
-      G = JSON.parse(data.blob);
+      const incoming = JSON.parse(data.blob);
+      if(G && typeof G.seq==='number' && typeof incoming.seq==='number' && incoming.seq < G.seq) return;
+      G = incoming;
       renderAll();
       resumeFlow();
     }, e=>{ console.error('subscribeState error', e); alert('Lost connection to the game: '+e.message); });
@@ -729,19 +742,21 @@ function resumeFlow(){
 /* ---------------- BIDDING ---------------- */
 function bidTurn(seat){
   const rd = G.round;
-  rd.awaiting = {type:'bid', seat};
   const passedSet = new Set(rd.passed);
-  if(passedSet.size>=3 && rd.highBidder!=null){ finishBidding(); return; }
+  if(passedSet.size>=3 && rd.highBidder!=null){ rd.awaiting={type:'bid',seat}; finishBidding(); return; }
   if(passedSet.size===4){
+    rd.awaiting = {type:'bid', seat};
     if(!IS_HOST){ setPanelMsg('Everyone passed — waiting for host to redeal...'); setPanelBtns([]); return; }
     logMsg('All players passed — redealing.');
     G.dealer = nextSeat(G.dealer);
     hostStartRound();
     return;
   }
+  if(passedSet.has(seat)){ bidTurn(nextSeat(seat)); return; } // already out of this auction
+  rd.awaiting = {type:'bid', seat};
   if(!authorizedFor(seat)){
+    clearDecisionUI();
     setPanelMsg(`Waiting for ${seatLabel(seat)} to bid...`);
-    setPanelBtns([]);
     return;
   }
   if(seat===MY_SEAT){ presentHumanBid(); return; }
@@ -755,8 +770,8 @@ function bidTurn(seat){
     else { action = {pass:true}; }
     if(action.pass){ rd.passed.push(seat); logMsg(`${seatLabel(seat)} passes.`); }
     else { rd.highBid=action.bid; rd.highBidder=seat; logMsg(`${seatLabel(seat)} bids ${action.bid}.`); }
-    pushState();
     advanceBid(seat);
+    pushState();
   }, 550);
 }
 function advanceBid(seat){
@@ -770,35 +785,38 @@ function presentHumanBid(){
   const rd = G.round;
   const canBid = rd.highBid < 28;
   const nextVal = Math.max(16, rd.highBid+1);
-  setPanelMsg(`Your bid to make (current high: ${rd.highBid||'none'})`);
+  setPanelMsg('Your turn to bid.');
+  setPanelBtns([]);
   const btns = [];
   if(canBid) btns.push({label:`Bid ${nextVal}`, cls:'primary', fn:()=>{
+    hideOverlay();
     rd.highBid = nextVal; rd.highBidder = MY_SEAT;
     logMsg(`You bid ${nextVal}.`);
-    pushState();
     advanceBid(MY_SEAT);
+    pushState();
   }});
   btns.push({label:'Pass', cls:'ghost', fn:()=>{
+    hideOverlay();
     rd.passed.push(MY_SEAT);
     logMsg('You pass.');
-    pushState();
     advanceBid(MY_SEAT);
+    pushState();
   }});
-  setPanelBtns(btns);
+  showOverlay('Your Bid', `Current high bid: ${rd.highBid||'none'}. Bids run 16–28.`, btns);
 }
 function finishBidding(){
   const rd = G.round;
   logMsg(`${seatLabel(rd.highBidder)} won the bid at ${rd.highBid}.`);
   rd.awaiting = {type:'trump', seat: rd.highBidder};
-  pushState();
   doTrumpStep(rd.highBidder);
+  pushState();
 }
 
 /* ---------------- TRUMP ---------------- */
 function doTrumpStep(seat){
   if(!authorizedFor(seat)){
+    clearDecisionUI();
     setPanelMsg(`Waiting for ${seatLabel(seat)} to choose trump...`);
-    setPanelBtns([]);
     return;
   }
   if(seat===MY_SEAT){ presentTrumpChoice(); return; }
@@ -806,10 +824,11 @@ function doTrumpStep(seat){
   setTrump(suit);
 }
 function presentTrumpChoice(){
-  setPanelMsg('You won the bid! Secretly choose your trump suit.');
+  setPanelMsg('Choosing trump...');
+  setPanelBtns([]);
   const btns = SUITS.map(s=>({label:`${SUIT_SYM[s]} ${SUIT_NAME[s]}`, cls:'suit-'+s,
-    fn:()=>{ hidePanelBtns(); setTrump(s); }}));
-  setPanelBtns(btns);
+    fn:()=>{ hideOverlay(); setTrump(s); }}));
+  showOverlay('You Won the Bid!', 'Secretly choose your trump suit — the others won\'t see this.', btns);
 }
 function setTrump(suit){
   const rd = G.round;
@@ -852,16 +871,17 @@ function dealRemaining(){
 /* ---------------- SINGLES / DOUBLE ---------------- */
 function doSinglesStep(seat){
   if(!authorizedFor(seat)){
+    clearDecisionUI();
     setPanelMsg(`Waiting for ${seatLabel(seat)}'s Singles decision...`);
-    setPanelBtns([]);
     return;
   }
   const rd = G.round;
   if(seat===MY_SEAT){
-    setPanelMsg('All 8 cards dealt. Play this round Singles (alone) for +3 / risk -3?');
-    setPanelBtns([
-      {label:'Play Singles', cls:'primary', fn:()=>{ rd.singles=MY_SEAT; logMsg('You go Singles.'); afterSingles(); }},
-      {label:'Play Normally', cls:'ghost', fn:()=>{ afterSingles(); }}
+    setPanelMsg('Singles decision...');
+    setPanelBtns([]);
+    showOverlay('Play Singles?', 'All 8 cards are dealt. Go it alone for a shot at +3 game points, or risk -3 if you miss even one trick.', [
+      {label:'Play Singles', cls:'primary', fn:()=>{ hideOverlay(); rd.singles=MY_SEAT; logMsg('You go Singles.'); afterSingles(); }},
+      {label:'Play Normally', cls:'ghost', fn:()=>{ hideOverlay(); afterSingles(); }}
     ]);
     return;
   }
@@ -880,16 +900,17 @@ function afterSingles(){
 }
 function doDoubleStep(seat){
   if(!authorizedFor(seat)){
+    clearDecisionUI();
     setPanelMsg(`Waiting for ${seatLabel(seat)}'s Double decision...`);
-    setPanelBtns([]);
     return;
   }
   const rd = G.round;
   if(seat===MY_SEAT){
-    setPanelMsg(`${seatLabel(rd.singles)} is playing Singles. Double the stakes?`);
-    setPanelBtns([
-      {label:'Double', cls:'primary', fn:()=>{ rd.doubled=true; logMsg('Double called.'); beginPlay(); }},
-      {label:'No thanks', cls:'ghost', fn:()=> beginPlay() },
+    setPanelMsg('Double decision...');
+    setPanelBtns([]);
+    showOverlay('Double the Stakes?', `${seatLabel(rd.singles)} is playing Singles. Double means their +3/-3 becomes +6/-6.`, [
+      {label:'Double', cls:'primary', fn:()=>{ hideOverlay(); rd.doubled=true; logMsg('Double called.'); beginPlay(); }},
+      {label:'No thanks', cls:'ghost', fn:()=>{ hideOverlay(); beginPlay(); } },
     ]);
     return;
   }
@@ -930,8 +951,8 @@ function playTurn(seat){
     return;
   }
   if(!authorizedFor(seat)){
+    clearDecisionUI();
     setPanelMsg(`Waiting for ${seatLabel(seat)}...`);
-    setPanelBtns([]);
     renderHand([]);
     return;
   }
@@ -949,6 +970,7 @@ function legalIsDiscardOnly(seat){
 }
 function presentHumanPlay(legal){
   setPanelMsg('Your turn — tap a highlighted card to play it.');
+  setPanelBtns([]);
   renderHand(legal.map(c=>c.id));
   const rd = G.round;
   const trumpKQ = rd.hands[MY_SEAT].filter(c=>c.s===rd.trump && (c.r==='K'||c.r==='Q'));
@@ -965,13 +987,13 @@ function presentHumanPlay(legal){
   if(rd.leadSuit && legal.some(c=>c.s!==rd.leadSuit) && legalIsDiscardOnly(MY_SEAT) && !rd.trumpRevealed && rd.highBidder!==MY_SEAT){
     btns.push({label:'Guess Trump Suit', cls:'ghost', fn:()=>offerTrumpGuess(MY_SEAT)});
   }
-  setPanelBtns(btns);
+  setCenterActions(btns);
 }
 function offerTrumpGuess(seat){
-  setPanelMsg('Guess the hidden trump suit. Correct: you trump this trick. Wrong: discard normally.');
-  const btns = SUITS.map(s=>({label:`${SUIT_SYM[s]} ${SUIT_NAME[s]}`, cls:'suit-'+s, fn:()=>resolveTrumpGuess(seat,s)}));
-  btns.push({label:'Cancel', cls:'ghost', fn:()=>presentHumanPlay(legalCards(seat))});
-  setPanelBtns(btns);
+  setCenterActions([]);
+  const btns = SUITS.map(s=>({label:`${SUIT_SYM[s]} ${SUIT_NAME[s]}`, cls:'suit-'+s, fn:()=>{ hideOverlay(); resolveTrumpGuess(seat,s); }}));
+  btns.push({label:'Cancel', cls:'ghost', fn:()=>{ hideOverlay(); presentHumanPlay(legalCards(seat)); }});
+  showOverlay('Guess the Trump Suit', 'Guess right and you trump into this trick. Guess wrong and you must discard normally.', btns);
 }
 function resolveTrumpGuess(seat, guess){
   const rd = G.round;
@@ -1035,11 +1057,12 @@ function playCard(seat, card){
   const playedSeats = Object.keys(rd.current).map(Number);
   const outCount = rd.singles!=null ? 1 : 0;
   if(playedSeats.length + outCount === 4){
+    rd.awaiting = {type:'trickPause'};
     pushState();
     setTimeout(resolveTrick, 700);
   } else {
-    pushState();
     playTurn(nextSeat(seat));
+    pushState();
   }
 }
 function beats(card, currentBest, rd){
@@ -1067,6 +1090,7 @@ function resolveTrick(){
 
   const cardsLeft = rd.hands[rd.first].length;
   if(cardsLeft===0){
+    rd.awaiting = {type:'trickPause'};
     pushState();
     setTimeout(endRound, 400);
   } else {
@@ -1262,6 +1286,22 @@ function setPanelBtns(list){
   }
 }
 function hidePanelBtns(){ document.getElementById('panelBtns').innerHTML=''; }
+function setCenterActions(list){
+  const row = document.getElementById('centerActions');
+  row.innerHTML='';
+  for(const b of list){
+    const btn = document.createElement('button');
+    btn.className = 'btn '+(b.cls||'');
+    btn.textContent = b.label;
+    btn.addEventListener('click', b.fn);
+    row.appendChild(btn);
+  }
+}
+function clearDecisionUI(){
+  setPanelBtns([]);
+  setCenterActions([]);
+  hideOverlay();
+}
 function showOverlay(title, text, btns){
   document.getElementById('ovTitle').textContent = title;
   document.getElementById('ovText').textContent = text;
